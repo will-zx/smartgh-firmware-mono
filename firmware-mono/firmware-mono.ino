@@ -2298,6 +2298,7 @@ static void controlTask(void* arg) {
             controlReleaseIrrigation();
             ov = controlOverrides();
             manual = controlIsManual();
+            irigasi = fuzzyIrigasi;
             irig = irrigationStatus();
         }
 
