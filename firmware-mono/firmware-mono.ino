@@ -328,6 +328,7 @@ struct OverrideState {
 
 void controlInit();   // buat mutex — panggil sebelum task dibuat
 void controlRelease();// semua aktuator kembali ke kendali fuzzy
+void controlReleaseIrrigation(); // hanya irigasi kembali ke kendali fuzzy
 void controlSet(uint8_t bit, bool on);   // on = paksa nyala, off = kembali ke fuzzy
 void controlForce(uint8_t bit, int8_t mode);
 void controlSetBlowerDuty(float duty);
@@ -523,6 +524,14 @@ void controlRelease() {
     tMist = tIrig = tBlower = 0;
     controlUnlock();
     Serial.println("[ctl] auto: semua aktuator kembali ke kendali fuzzy");
+}
+
+void controlReleaseIrrigation() {
+    controlLock();
+    ovIrig = -1;
+    tIrig = 0;
+    controlUnlock();
+    Serial.println("[ctl] irigasi kembali ke auto (permintaan manual ditahan)");
 }
 
 void controlForce(uint8_t bit, int8_t mode) {
@@ -2284,6 +2293,13 @@ static void controlTask(void* arg) {
         }
         bool irigasiRunning = irrigationRunning();
         IrrigStatus irig = irrigationStatus();
+        // Permintaan manual yang ditahan gate tidak boleh meninggalkan tombol ON.
+        if (manualIrigOn && !irigasiRunning && irig.holdReason && irig.holdReason[0]) {
+            controlReleaseIrrigation();
+            ov = controlOverrides();
+            manual = controlIsManual();
+            irig = irrigationStatus();
+        }
 
         float rTemp = sensorData.valid ? sensorData.temperature : NAN;
         float rHum  = sensorData.valid ? sensorData.humidity : NAN;

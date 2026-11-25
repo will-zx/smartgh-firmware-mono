@@ -204,7 +204,8 @@ durasi_pompa_ms = dosis_ml / debit_ml_per_detik x 1000
 `Tmean` adalah rata-rata suhu 24 jam dalam ember 1 menit. Sebelum jendela
 24 jam terisi penuh, ETc memakai suhu EMA terakhir yang masih segar sebagai
 Tmean sementara dan menandainya `tmean_fallback`; fallback kedaluwarsa setelah
-5 menit tanpa sampel valid.
+5 menit tanpa sampel valid. Permintaan irigasi manual yang ditahan gate
+otomatis dilepas kembali ke AUTO.
 
 ## Fail-safe
 
