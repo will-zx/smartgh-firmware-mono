@@ -320,6 +320,7 @@ void controlInit();   // buat mutex — panggil sebelum task dibuat
 void controlRelease();// semua aktuator kembali ke kendali fuzzy
 void controlSet(uint8_t bit, bool on);   // on = paksa nyala, off = kembali ke fuzzy
 void controlForce(uint8_t bit, int8_t mode);
+void controlSetBlowerDuty(float duty);
 void controlApply(bool* mist, bool* irigasi, bool* blower, float* blowerLevel = nullptr);
 bool controlIsManual();
 OverrideState controlOverrides();   // status override saat ini (untuk telemetri)
@@ -464,6 +465,7 @@ void initActuators() {
 
 static SemaphoreHandle_t controlMux = nullptr;
 static int8_t      ovMist = -1, ovIrig = -1, ovBlower = -1;
+static float       ovBlowerDuty = -1.0f;
 static unsigned long tMist = 0, tIrig = 0, tBlower = 0;   // millis override aktif
 static uint32_t irrigationRequestId = 0;
 
@@ -482,7 +484,7 @@ static void expireManual() {
     } else if (ovIrig >= 0 && now - tIrig >= MANUAL_MAX_MS) {
         ovIrig = -1; tIrig = 0; nama = "irigasi";
     } else if (ovBlower >= 0 && now - tBlower >= MANUAL_MAX_MS) {
-        ovBlower = -1; tBlower = 0; nama = "blower";
+        ovBlower = -1; tBlower = 0; ovBlowerDuty = -1.0f; nama = "blower";
     } else {
         return;
     }
@@ -497,6 +499,7 @@ void controlInit() {
 void controlRelease() {
     controlLock();
     ovMist = ovIrig = ovBlower = -1;
+    ovBlowerDuty = -1.0f;
     tMist = tIrig = tBlower = 0;
     controlUnlock();
     Serial.println("[ctl] auto: semua aktuator kembali ke kendali fuzzy");
@@ -513,11 +516,25 @@ void controlForce(uint8_t bit, int8_t mode) {
         ovIrig = mode; tIrig = stamp; nama = "irigasi";
         if (mode == 1) irrigationRequestId++;
     }
-    if (bit & C_BLOWER) { ovBlower = mode; tBlower = stamp; nama = "blower"; }
+    if (bit & C_BLOWER) {
+        ovBlower = mode; tBlower = stamp; nama = "blower";
+        ovBlowerDuty = (mode == 1) ? 1.0f : -1.0f;
+    }
     controlUnlock();
     Serial.printf("[ctl] override %s -> %s\n", nama,
                   mode == 1 ? "paksa nyala"
                             : (mode == 0 ? "paksa mati" : "kembali ke fuzzy"));
+}
+
+void controlSetBlowerDuty(float duty) {
+    if (!(duty >= 0.0f)) duty = 0.0f;
+    if (duty > 1.0f) duty = 1.0f;
+    controlLock();
+    ovBlower = (duty > 0.0f) ? 1 : 0;
+    ovBlowerDuty = duty;
+    tBlower = millis();
+    controlUnlock();
+    Serial.printf("[ctl] override blower -> duty %.0f%%\n", duty * 100);
 }
 
 void controlSet(uint8_t bit, bool on) {
@@ -531,7 +548,11 @@ void controlApply(bool* mist, bool* irigasi, bool* blower, float* blowerLevel) {
     if (ovIrig >= 0)   *irigasi = (ovIrig == 1);
     if (ovBlower >= 0) {
         *blower = (ovBlower == 1);
-        if (blowerLevel) *blowerLevel = (ovBlower == 1) ? 1.0f : 0.0f;
+        if (blowerLevel) {
+            *blowerLevel = (ovBlower == 1)
+                ? (ovBlowerDuty >= 0.0f ? ovBlowerDuty : 1.0f)
+                : 0.0f;
+        }
     }
     controlUnlock();
 }
@@ -948,6 +969,13 @@ void pollCommands() {
         applyActuator(C_IRIG, mode, on);
     } else if (strcmp(action, "blower") == 0) {
         applyActuator(C_BLOWER, mode, on);
+    } else if (strcmp(action, "set_blower_duty") == 0) {
+        float pct = value | -1.0f;
+        if (isnan(pct) || pct < 0.0f || pct > 100.0f) {
+            Serial.printf("[fb] set_blower_duty ditolak: %.1f%% (harus 0-100)\n", pct);
+        } else {
+            controlSetBlowerDuty(pct / 100.0f);
+        }
     } else if (strcmp(action, "set_vpd") == 0) {
         if (value.is<int>() || value.is<float>()) {
             float v = value.as<float>();

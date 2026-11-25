@@ -229,9 +229,10 @@ Perintah dibaca dari:
 /commands/{DEVICE_ID}
 ```
 
-Aksi perintah yang dikenali: `mist`, `irigasi`, `blower`, `auto`, `restart`,
-`set_vpd`, `set_fase`, `set_durasi`, dan `fase_reset`. Untuk aktuator, field
-`mode` menerima `on`, `off`, atau `auto`. Field `value` lama tetap didukung.
+Aksi perintah yang dikenali: `mist`, `irigasi`, `blower`, `set_blower_duty`, `auto`,
+`restart`, `set_vpd`, `set_fase`, `set_durasi`, dan `fase_reset`. Untuk aktuator,
+field `mode` menerima `on`, `off`, atau `auto`. `set_blower_duty` memakai
+`value` angka 0-100 (persen). Field `value` lama tetap didukung.
 
 Field telemetri utama: `temperature`, `humidity`, `soil`, `soil2`, `soil3`,
 `soil_ok`, `soil_n`, `vpd`, `etc`, `tmean_c`, `blower_level`, `misting`,
