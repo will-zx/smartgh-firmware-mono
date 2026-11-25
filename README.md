@@ -1,7 +1,7 @@
 # Smart Greenhouse Firmware (Mono-File)
 
 Firmware ESP32 untuk smart greenhouse cabai merah dalam **satu file Arduino**
-(`firmware-mono.ino`). Perangkat membaca suhu/kelembapan udara dengan **DHT22**,
+(`firmware-mono/firmware-mono.ino`). Perangkat membaca suhu/kelembapan udara dengan **DHT22**,
 tiga probe kelembapan tanah kapasitif, memutuskan misting/blower/irigasi lewat
 fuzzy logic, lalu mengirim telemetri ke Firebase Realtime Database.
 
@@ -64,15 +64,16 @@ GPIO 34/33/39; pompa DIST memakai GPIO 32 sebagai output digital.
 
 | Aktuator | Pin | Sinyal | Fungsi |
 | --- | --- | --- | --- |
-| Misting | GPIO 26 | Digital relay | Penyiram kabut |
-| Blower (2 kipas paralel) | GPIO 25 | Digital relay ON/OFF | Ventilasi |
-| FILL | GPIO 27 | Digital relay | Tandon air -> tandon pencampuran |
-| DOSE_A | GPIO 13 | Digital relay | Stok pupuk A -> tandon pencampuran |
-| DOSE_B | GPIO 14 | Digital relay | Stok pupuk B -> tandon pencampuran |
-| DIST | GPIO 32 | Digital relay | Tandon pencampuran -> tanaman |
+| Misting | GPIO 26 | MOSFET (XY-MOS) | Penyiram kabut |
+| Blower (2 kipas paralel) | GPIO 25 | MOSFET PWM (XY-MOS) | Ventilasi |
+| FILL | GPIO 27 | MOSFET | Tandon air -> tandon pencampuran |
+| DOSE_A | GPIO 13 | MOSFET | Stok pupuk A -> tandon pencampuran |
+| DOSE_B | GPIO 14 | MOSFET | Stok pupuk B -> tandon pencampuran |
+| DIST | GPIO 32 | MOSFET | Tandon pencampuran -> tanaman |
 
-Semua aktuator memakai relay. Blower di firmware mono ini **ON/OFF**, bukan PWM.
-Ubah `RELAY_INVERTED` menjadi `1` di bagian config bila modul relay aktif-LOW.
+Aktuator memakai modul **XY-MOS/MOSFET**. Blower memakai PWM LEDC 1 kHz
+(`BLOWER_FREQ`, `BLOWER_RES 8`) dengan duty minimum 20 % (`BLOWER_MIN_DUTY`).
+Ubah `MOSFET_INVERTED` menjadi `1` di bagian config bila modul aktif-LOW.
 
 ### LCD, I2C, dan MicroSD
 
@@ -87,7 +88,7 @@ tetapi tidak menyimpan backup log lokal.
 
 ## Konfigurasi
 
-Semua konfigurasi berada di bagian atas `firmware-mono.ino`.
+Semua konfigurasi berada di bagian atas `firmware-mono/firmware-mono.ino`.
 
 ### WiFi dan Firebase
 
@@ -179,7 +180,7 @@ controlTask (core 1, tiap ~2 detik)
   -> fuzzy decision
   -> koreksi setpoint VPD fase
   -> override manual
-  -> relay aktuator + state machine fertigasi
+  -> MOSFET aktuator + state machine fertigasi
   -> LCD + log MicroSD
   -> snapshot untuk netTask
 
@@ -206,10 +207,10 @@ setelah jendela 24 jam terisi penuh.
 
 - DHT22 tidak valid atau data di luar rentang membuat status menjadi
   `Sensor Error`.
-- Saat sensor tidak valid, misting dan blower dimatikan, permintaan irigasi
-  fuzzy tidak dipakai, dan siklus irigasi yang berjalan dibatalkan.
-- Override manual tetap dihormati untuk perintah eksplisit, kecuali kondisi
-  sensor tidak valid yang tetap memaksa siklus fertigasi berhenti.
+- Saat sensor tidak valid, keputusan otomatis (fuzzy) dimatikan, tetapi override
+  manual misting/blower/irigasi tetap dihormati sampai kedaluwarsa.
+- Irigasi manual saat sensor error tetap melewati gate keamanan `irrigationUpdate`
+  (sinkronisasi waktu, Tmean, kapasitas tangki, volume, dan dosis).
 - Override manual kedaluwarsa setelah 10 menit dan aktuator kembali ke fuzzy.
 - Task watchdog dinonaktifkan pada varian mono ini untuk simulasi
   (`esp_task_wdt_deinit()` di `setup()`).
@@ -240,7 +241,7 @@ dikirim ke Firebase.
 
 ## Build dan upload
 
-1. Buka `firmware-mono.ino` di Arduino IDE.
+1. Buka `firmware-mono/firmware-mono.ino` di Arduino IDE.
 2. Pilih board **ESP32 Dev Module**.
 3. Pasang library pada bagian kebutuhan library.
 4. Isi kredensial Firebase dan pastikan WiFi benar.
@@ -269,12 +270,12 @@ dan pull-up.
 | Gagal konek WiFi | Gunakan SSID 2,4 GHz, cek password, dan jangkauan sinyal |
 | Data tidak masuk Firebase | Isi `FIREBASE_API_KEY`, `DEVICE_ID`, `DEVICE_EMAIL`, `DEVICE_PASSWORD` |
 | Tidak ada backup log | Pastikan kartu MicroSD FAT32 dan wiring SPI benar |
-| Pompa/aktuator terbalik | Ubah `RELAY_INVERTED` sesuai modul relay |
+| Pompa/aktuator terbalik | Ubah `MOSFET_INVERTED` sesuai modul MOSFET |
 
 ## Struktur repo
 
 ```text
-firmware-mono.ino   Firmware lengkap dalam satu file untuk Arduino IDE
+firmware-mono/firmware-mono.ino   Firmware lengkap dalam satu file untuk Arduino IDE
 README.md           Dokumentasi ini
 ```
 

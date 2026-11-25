@@ -1,4 +1,3 @@
-// Salinan mandiri Smart Greenhouse untuk Arduino IDE.
 #include <Arduino.h>
 #include <stdint.h>
 #include <freertos/semphr.h>
@@ -53,9 +52,12 @@ static Snapshot snapshotRead();
 #define LCD_COLS        16
 #define LCD_ROWS        2
 
-#define MIST_RELAY     26
+#define MOSFET_MIST     26
 #define BLOWER_PIN      25
-#define RELAY_INVERTED  0   // ubah ke 1 untuk relay aktif-LOW
+#define BLOWER_FREQ     1000
+#define BLOWER_RES      8
+#define BLOWER_MIN_DUTY 0.20f
+#define MOSFET_INVERTED 0
 #define PUMP_FILL           27   // tandon air -> tandon pencampuran
 #define PUMP_DOSE_A         13   // stok pupuk A -> tandon pencampuran
 #define PUMP_DOSE_B         14   // stok pupuk B -> tandon pencampuran
@@ -99,10 +101,10 @@ static_assert(PUMP_FILL != PUMP_DOSE_A && PUMP_FILL != PUMP_DOSE_B &&
 static_assert(FILL_FLOW_ML_S > 0 && DOSE_A_FLOW_ML_S > 0 &&
               DOSE_B_FLOW_ML_S > 0 && DIST_FLOW_ML_S > 0,
               "All configured pump flow rates must be positive");
-static_assert(PUMP_FILL != MIST_RELAY && PUMP_FILL != BLOWER_PIN &&
-              PUMP_DOSE_A != MIST_RELAY && PUMP_DOSE_A != BLOWER_PIN &&
-              PUMP_DOSE_B != MIST_RELAY && PUMP_DOSE_B != BLOWER_PIN &&
-              PUMP_DIST != MIST_RELAY && PUMP_DIST != BLOWER_PIN &&
+static_assert(PUMP_FILL != MOSFET_MIST && PUMP_FILL != BLOWER_PIN &&
+              PUMP_DOSE_A != MOSFET_MIST && PUMP_DOSE_A != BLOWER_PIN &&
+              PUMP_DOSE_B != MOSFET_MIST && PUMP_DOSE_B != BLOWER_PIN &&
+              PUMP_DIST != MOSFET_MIST && PUMP_DIST != BLOWER_PIN &&
               PUMP_FILL != I2C_SDA && PUMP_FILL != I2C_SCL &&
               PUMP_DOSE_A != I2C_SDA && PUMP_DOSE_A != I2C_SCL &&
               PUMP_DOSE_B != I2C_SDA && PUMP_DOSE_B != I2C_SCL &&
@@ -291,7 +293,7 @@ void irrigationAbort();           // sensor tidak valid / darurat -> pompa mati
 struct FuzzyOutput {
     bool mistOn;
     bool blowerOn;
-    float blowerLevel;   // level fuzzy 0..1 sebelum diterjemahkan menjadi relay
+    float blowerLevel;   // level fuzzy 0..1 untuk duty PWM blower
     bool irigasiOn;      // keputusan WAKTU irigasi (soil x ETc) -> memicu siklus DIST
     const char* status;
 };
@@ -431,19 +433,28 @@ void lcdScrollSetStatus(const char* status);
 
 // ===== actuator.cpp =====
 
+static const int BLOWER_CH = 0;
+
 void setActuators(bool mist, bool blower, float blowerLevel) {
-    (void)blowerLevel; // Relay tidak mendukung PWM.
-    digitalWrite(MIST_RELAY, (mist ^ RELAY_INVERTED) ? HIGH : LOW);
-    digitalWrite(BLOWER_PIN, (blower ^ RELAY_INVERTED) ? HIGH : LOW);
+    digitalWrite(MOSFET_MIST, (mist ^ MOSFET_INVERTED) ? HIGH : LOW);
+    if (blower && blowerLevel > 0.0f && blowerLevel < BLOWER_MIN_DUTY) {
+        blowerLevel = BLOWER_MIN_DUTY;
+    }
+    uint8_t duty = blower ? (uint8_t)(blowerLevel * ((1 << BLOWER_RES) - 1)) : 0;
+    ledcWrite(BLOWER_CH, duty);
 }
 
 void initActuators() {
-    const uint8_t relays[] = {MIST_RELAY, BLOWER_PIN, PUMP_FILL,
-                              PUMP_DOSE_A, PUMP_DOSE_B, PUMP_DIST};
-    for (uint8_t pin : relays) {
-        digitalWrite(pin, RELAY_INVERTED ? HIGH : LOW);
+    pinMode(MOSFET_MIST, OUTPUT);
+    ledcSetup(BLOWER_CH, BLOWER_FREQ, BLOWER_RES);
+    ledcAttachPin(BLOWER_PIN, BLOWER_CH);
+
+    const uint8_t pumps[] = {PUMP_FILL, PUMP_DOSE_A, PUMP_DOSE_B, PUMP_DIST};
+    for (uint8_t pin : pumps) {
+        digitalWrite(pin, MOSFET_INVERTED ? HIGH : LOW);
         pinMode(pin, OUTPUT);
     }
+
     setActuators(false, false, 0.0f);
 }
 
@@ -1155,7 +1166,7 @@ static uint32_t lastCycleEpoch = 0;
 static char lastPrintedHold[sizeof(holdReason)] = "";
 
 static void setPump(uint8_t pin, bool on) {
-    digitalWrite(pin, (on ^ RELAY_INVERTED) ? HIGH : LOW);
+    digitalWrite(pin, (on ^ MOSFET_INVERTED) ? HIGH : LOW);
 }
 static void allPumpsOff() {
     setPump(PUMP_FILL, false); setPump(PUMP_DOSE_A, false);
@@ -1957,7 +1968,7 @@ static const int NET_TASK_CORE = 0;
 struct Snapshot {
     float temperature, humidity, soilMoisture, soil2, soil3, vpd, etc, tmean;
     bool  manual, mist, blower, irigasiRunning;
-    float blowerLevel;  // kondisi relay blower aktual: 0 = mati, 1 = nyala
+    float blowerLevel;  // duty blower aktual: 0 = mati, 1 = 100 %
     char  status[96];   // label aksi (buildStatus) + penanda SOILERR/NOSYNC/...
     uint8_t soilOk;     // bitmask probe tanah valid (0 = semua mati)
     uint8_t soilCount;  // jumlah probe tanah valid
@@ -2185,19 +2196,19 @@ static void controlTask(void* arg) {
 
         bool fuzzyMist = mist, fuzzyBlower = blower, fuzzyIrigasi = irigasi;
 
-        // Override manual tetap menang.
-        if (sensorData.valid) controlApply(&mist, &irigasi, &blower, &blowerLevel);
-        blowerLevel = blower ? 1.0f : 0.0f; // nilai aktual relay ON/OFF
+        // Override manual tetap menang, termasuk saat sensor error.
+        controlApply(&mist, &irigasi, &blower, &blowerLevel);
         bool manual = controlIsManual();
         OverrideState ov = controlOverrides();
         setActuators(mist, blower, blowerLevel);
 
-        if (!sensorData.valid) {
-            irrigationAbort();
-        } else if (ov.irig == 0) {
+        // Paksa mati selalu abort; saat sensor error hanya paksa nyala manual
+        // yang diteruskan. Gate keamanan irrigationUpdate tetap berlaku.
+        bool manualIrigOn = (ov.irig == 1);
+        if (ov.irig == 0 || (!sensorData.valid && !manualIrigOn)) {
             irrigationAbort();
         } else {
-            irrigationUpdate(irigasi, ov.irig == 1, controlIrrigationRequestId());
+            irrigationUpdate(irigasi, manualIrigOn, controlIrrigationRequestId());
         }
         bool irigasiRunning = irrigationRunning();
         IrrigStatus irig = irrigationStatus();
@@ -2261,7 +2272,7 @@ static void controlTask(void* arg) {
         s.mist = mist;
         s.blower = blower;
         s.irigasiRunning = irigasiRunning;
-        s.blowerLevel = blowerLevel;   // kondisi relay blower aktual
+        s.blowerLevel = blowerLevel;
         s.ov = ov;
         s.irig = irig;
         s.fuzzyMist = fuzzyMist;
@@ -2271,13 +2282,15 @@ static void controlTask(void* arg) {
         if (!sensorData.soilValid) statusAdd(s.status, sizeof(s.status), " SOILERR");
         if (time(nullptr) < 100000) statusAdd(s.status, sizeof(s.status), " NOSYNC");
         if (!IRRIG_AUTO_ENABLED) statusAdd(s.status, sizeof(s.status), " IRIGOFF");
+        if (!sensorData.valid && !strstr(s.status, "Sensor Error"))
+            statusAdd(s.status, sizeof(s.status), " Sensor Error");
         lcdScrollSetStatus(s.status);
         s.phase = phaseGet();
         snapshotPublish(s);
 
         for (uint8_t tick = 1; tick < 2000 / IRRIG_CONTROL_TICK_MS; ++tick) {
             vTaskDelay(pdMS_TO_TICKS(IRRIG_CONTROL_TICK_MS));
-            if (!sensorData.valid || ov.irig == 0) irrigationAbort();
+            if (ov.irig == 0 || (!sensorData.valid && ov.irig != 1)) irrigationAbort();
             else irrigationUpdate(irigasi, ov.irig == 1, controlIrrigationRequestId());
         }
         vTaskDelay(pdMS_TO_TICKS(IRRIG_CONTROL_TICK_MS));
