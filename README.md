@@ -201,8 +201,10 @@ dosis_ml = anggaran_harian_ml / siklus_per_hari
 durasi_pompa_ms = dosis_ml / debit_ml_per_detik x 1000
 ```
 
-`Tmean` adalah rata-rata suhu 24 jam dalam ember 1 menit. Nilai ETc baru sah
-setelah jendela 24 jam terisi penuh.
+`Tmean` adalah rata-rata suhu 24 jam dalam ember 1 menit. Sebelum jendela
+24 jam terisi penuh, ETc memakai suhu EMA terakhir yang masih segar sebagai
+Tmean sementara dan menandainya `tmean_fallback`; fallback kedaluwarsa setelah
+5 menit tanpa sampel valid.
 
 ## Fail-safe
 

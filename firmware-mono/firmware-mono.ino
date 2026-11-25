@@ -158,6 +158,9 @@ static const float SUN_P_MONTH[12] = {
 #define BC_T_CONST       8.0f
 #define BC_TMEAN_BUCKET_MS   60000UL   // 1 menit per ember
 #define BC_TMEAN_BUCKETS     1440     // 24 jam x 1 menit
+// Sebelum jendela 24 jam terisi, ETc memakai suhu EMA terakhir yang valid
+// sebagai Tmean sementara. Fallback hanya dipakai selama sampel masih segar.
+#define TMEAN_FALLBACK_MAX_AGE_MS 300000UL // 5 menit
 // Batas atas ETo (mm/hari) supaya nilai ekstrem tidak dipakai.
 #define MAX_ET0        12.0
 #define IRRIG_EFFICIENCY 1.0f // tidak ada data efisiensi lapangan; kalibrasikan bila diketahui
@@ -263,6 +266,7 @@ struct IrrigStatus {
     float         budgetMl;        // anggaran harian (mL)
     float         usedMl;          // volume yang sudah dialirkan hari ini (mL)
     unsigned long minIntervalMs;   // jeda minimum antar siklus (ms)
+    bool          tmeanFallback;   // ETc memakai suhu saat ini, bukan rerata 24 jam
     const char*   holdReason;      // alasan permintaan ditahan ("" = tidak ditahan)
 };
 
@@ -270,6 +274,11 @@ void irrigationFeedTemp(float temp);
 
 // Tmean = rerata 24 jam yang sah; NaN sebelum jendela penuh.
 float irrigationTmean();
+
+// Tmean efektif untuk ETc: rerata 24 jam bila siap, atau suhu terakhir yang
+// masih segar sebagai fallback sampai jendela penuh.
+float irrigationEffectiveTmean();
+bool irrigationTmeanIsFallback();
 
 float calculateEtc();
 
@@ -852,6 +861,7 @@ bool pushSensorLog(float temperature, float humidity, float soil, float soil2, f
     }
     doc["kc_aktif"] = phase.kc;
     putNum(doc, "tmean_c", tmean);
+    doc["tmean_fallback"] = irig.tmeanFallback;
     doc["fertigation_phase"] = irig.phaseName ? irig.phaseName : "IDLE";
     doc["fertigation_result"] = irig.result ? irig.result : "IDLE";
     putNum(doc, "fertigation_target_ml", irig.phaseTargetMl);
@@ -1201,6 +1211,9 @@ static float temperatureSum = 0;
 static uint16_t temperatureCount = 0;
 static uint32_t temperatureBucket = UINT32_MAX;
 static bool temperatureInit = false;
+static float lastValidTemp = NAN;
+static uint32_t lastValidTempMs = 0;
+static bool hasLastValidTemp = false;
 static uint32_t lastCycleEpoch = 0;
 static char lastPrintedHold[sizeof(holdReason)] = "";
 
@@ -1291,14 +1304,32 @@ static bool cycleFitsLimits(float waterMl, float doseAMlPerL, float doseBMlPerL)
     return true;
 }
 
-float calculateEtc() {
+static bool tmeanFallbackFresh() {
+    return hasLastValidTemp && isfinite(lastValidTemp) &&
+        (millis() - lastValidTempMs) <= TMEAN_FALLBACK_MAX_AGE_MS;
+}
+
+float irrigationEffectiveTmean() {
     float tmean = irrigationTmean();
+    if (isfinite(tmean)) return tmean;
+    return tmeanFallbackFresh() ? lastValidTemp : NAN;
+}
+
+bool irrigationTmeanIsFallback() {
+    return !isfinite(irrigationTmean()) && tmeanFallbackFresh();
+}
+
+float calculateEtc() {
+    float tmean = irrigationEffectiveTmean();
     if (!isfinite(tmean)) return 0;
     float eto = constrain(pFactorSaatIni() * (BC_T_COEF * tmean + BC_T_CONST), 0.0f, MAX_ET0);
     return eto * phaseKc();
 }
 void irrigationFeedTemp(float temp) {
     if (!isfinite(temp)) return;
+    lastValidTemp = temp;
+    lastValidTempMs = millis();
+    hasLastValidTemp = true;
     if (!temperatureInit) {
         for (uint16_t i = 0; i < BC_TMEAN_BUCKETS; ++i) temperatures[i] = NAN;
         temperatureBucket = millis() / BC_TMEAN_BUCKET_MS;
@@ -1336,6 +1367,7 @@ unsigned long irrigationDoseMs() { return durationMs(irrigationDoseMl(), DIST_FL
 unsigned long irrigationMinIntervalMs() { return IRRIG_CYCLES_PER_DAY > 0 ? 86400000UL / IRRIG_CYCLES_PER_DAY : 0; }
 IrrigStatus irrigationStatus() {
     IrrigStatus s{}; s.budgetMl = irrigationDailyBudgetMl(); s.usedMl = usedMl;
+    s.tmeanFallback = irrigationTmeanIsFallback();
     s.phaseName = irrigationPhaseName();
     s.result = processResult;
     s.phaseTargetMl = phase == IRRIG_IDLE || phase == IRRIG_SETTLE ? 0 : phaseVolume(phase);
@@ -1407,7 +1439,8 @@ void irrigationUpdate(bool trigger, bool manual, uint32_t requestId) {
         if (!IRRIG_AUTO_ENABLED && !manual) strncpy(holdReason, "irigasi otomatis dinonaktifkan", sizeof(holdReason)-1);
         else if (!fertilizerConfigValid()) strncpy(holdReason, "dosis AB Mix belum divalidasi/diaktifkan", sizeof(holdReason)-1);
         else if (!clockOk) strncpy(holdReason, "menunggu sinkronisasi waktu", sizeof(holdReason)-1);
-        else if (water <= 0 || water > IRRIG_MAX_CYCLE_ML || irrigationTmean() != irrigationTmean()) strncpy(holdReason, "ETc/Tmean 24 jam belum tersedia", sizeof(holdReason)-1);
+        else if (water <= 0 || !isfinite(irrigationEffectiveTmean())) strncpy(holdReason, "ETc/Tmean belum tersedia", sizeof(holdReason)-1);
+        else if (water > IRRIG_MAX_CYCLE_ML) strncpy(holdReason, "volume siklus melebihi batas", sizeof(holdReason)-1);
         else if (!manualNew && (!budgetOk || !intervalOk)) strncpy(holdReason, !budgetOk ? "anggaran harian habis" : "jeda minimum belum lewat", sizeof(holdReason)-1);
         else if (!intervalOk) strncpy(holdReason, "jeda minimum belum lewat sejak siklus terakhir", sizeof(holdReason)-1);
         else if (!cycleFitsLimits(water, phaseDoseAMlPerL(), phaseDoseBMlPerL())) strncpy(holdReason, "volume/durasi melebihi batas atau kapasitas tangki belum diatur", sizeof(holdReason)-1);
@@ -2259,14 +2292,15 @@ static void controlTask(void* arg) {
         float rSoil3 = sensorData.soilPct[2];
         float rVpd  = sensorData.valid ? vpdValue : NAN;
         float rEtc  = sensorData.valid ? etcValue : NAN;
-        float rTmean = irrigationTmean();
+        float rTmean = irrigationEffectiveTmean();
 
         char statusTxt[96];
         buildStatus(statusTxt, sizeof(statusTxt), systemStatus,
                     irigasiRunning, mist, blower);
 
-        Serial.printf("T:%.1fC H:%.1f%% Soil:%.1f%% VPD:%.2fkPa ETc:%.1fmm Tmean:%.1f [%s]",
-                      rTemp, rHum, rSoil, rVpd, rEtc, rTmean, statusTxt);
+        Serial.printf("T:%.1fC H:%.1f%% Soil:%.1f%% VPD:%.2fkPa ETc:%.1fmm Tmean:%.1f%s [%s]",
+                      rTemp, rHum, rSoil, rVpd, rEtc, rTmean,
+                      irig.tmeanFallback ? "*" : "", statusTxt);
         Serial.printf(" Mist:%s Irig:%s Blower:%s(lv%.0f%%) Fase:%s Kc:%.2f VPDtgt:%.2f",
                       mist ? "ON" : "OFF", irigasiRunning ? "RUN" : "OFF",
                       blower ? "ON" : "OFF", blowerLevel * 100.0,
