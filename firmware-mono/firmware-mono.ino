@@ -13,6 +13,7 @@
 #include <esp_timer.h>
 #include <SD.h>
 #include <esp_system.h>
+#include <esp_arduino_version.h>
 #include <esp_task_wdt.h>
 
 #define WIFI_SSID       "jon"
@@ -434,7 +435,9 @@ void lcdScrollSetStatus(const char* status);
 
 // ===== actuator.cpp =====
 
+#if ESP_ARDUINO_VERSION_MAJOR < 3
 static const int BLOWER_CH = 0;
+#endif
 
 void setActuators(bool mist, bool blower, float blowerLevel) {
     digitalWrite(MOSFET_MIST, (mist ^ MOSFET_INVERTED) ? HIGH : LOW);
@@ -442,13 +445,21 @@ void setActuators(bool mist, bool blower, float blowerLevel) {
         blowerLevel = BLOWER_MIN_DUTY;
     }
     uint8_t duty = blower ? (uint8_t)(blowerLevel * ((1 << BLOWER_RES) - 1)) : 0;
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+    ledcWrite(BLOWER_PIN, duty);
+#else
     ledcWrite(BLOWER_CH, duty);
+#endif
 }
 
 void initActuators() {
     pinMode(MOSFET_MIST, OUTPUT);
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+    ledcAttach(BLOWER_PIN, BLOWER_FREQ, BLOWER_RES);
+#else
     ledcSetup(BLOWER_CH, BLOWER_FREQ, BLOWER_RES);
     ledcAttachPin(BLOWER_PIN, BLOWER_CH);
+#endif
 
     const uint8_t pumps[] = {PUMP_FILL, PUMP_DOSE_A, PUMP_DOSE_B, PUMP_DIST};
     for (uint8_t pin : pumps) {
