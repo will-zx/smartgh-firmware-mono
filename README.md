@@ -154,8 +154,9 @@ Koreksi per pompa tersedia lewat `FILL_FLOW_CORRECTION`,
 `DIST_FLOW_CORRECTION`. Kalibrasi ulang dengan mengukur volume keluaran nyata
 pada instalasi akhir.
 
-Dosis nutrisi Hydro J masih dinonaktifkan (`FERTILIZER_DOSE_ENABLED 0`) sampai
-formulasi dan dosis produk dikonfirmasi. Batas perangkat lunak: volume siklus
+Dosis nutrisi Hydro J aktif (`FERTILIZER_DOSE_ENABLED 1`) dengan panduan produk:
+Semai/Awal 3 mL/L, Vegetatif 5 mL/L, Generatif/Pembungaan/Buah/Panen 7 mL/L.
+Verifikasi produk dan stok sebelum dipakai. Batas perangkat lunak: volume siklus
 maksimum 18.000 mL, dosis stok A/B maksimum 500 mL, kapasitas tangki campuran
 18.000 mL, dan kapasitas stok A/B masing-masing 6.216 mL. Tidak ada sensor level
 fisik, jadi luapan harus dicegah secara mekanis oleh operator.
